@@ -1,13 +1,17 @@
 """Simulation screen: runs one life form and owns its 3D scene, HUD and controls (SPEC 3.1, 5).
 
 GUI-only. Keys map to actions in ``alife.keys``; the HUD text comes from ``alife.ui_text``.
-F6 adds save (Cmd/Ctrl+S) and autosave; M5 adds the info panel (I).
+Cmd/Ctrl+S saves with a toast; Esc autosaves, then shows the menu (the app autosaves on quit).
+M5 adds the info panel (I).
 """
 
 from __future__ import annotations
 
 import math
+import sys
 from collections.abc import Callable
+from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ursina import Entity, camera, destroy, held_keys, mouse, time
@@ -15,12 +19,13 @@ from ursina import Entity, camera, destroy, held_keys, mouse, time
 from alife import keys
 from alife.camera import OrbitCamera
 from alife.geometry import from_world
+from alife.save import Pose, SaveError, build_save
 from alife.session import Session, new_seed
 from alife.ui import destroy_tree
 from alife.ui.confirm import ConfirmDialog
 from alife.ui.hud import Hud
 from alife.ui.toast import Toast
-from alife.ui_text import CONFIRM_NEW, CONFIRM_RESET, FpsMeter, hud_lines
+from alife.ui_text import CONFIRM_NEW, CONFIRM_RESET, SAVE_FAILED, SAVED, FpsMeter, hud_lines
 
 if TYPE_CHECKING:
     from alife.app import App
@@ -33,15 +38,16 @@ class SimulationScreen(Entity):
     3D: ``root`` holds the orbit camera (F4) and ``view_root``, where the life form builds its
     view; Reset and New rebuild only ``view_root``, so the camera keeps its pose. 2D: ``ui_root``
     (under ``camera.ui``) holds the HUD, the toast and any confirm dialog. Closing the screen
-    destroys both trees.
+    destroys both trees. ``camera_pose`` (a restored save's) places the camera; None is the
+    default pose.
     """
 
-    def __init__(self, app: App, session: Session) -> None:
+    def __init__(self, app: App, session: Session, camera_pose: Pose | None = None) -> None:
         super().__init__(name="simulation_screen")
         self.app = app
         self.session = session
         self.root = Entity(name="simulation_root")
-        self.orbit_camera = OrbitCamera()  # WASD through keys.pan_vector (camera.py)
+        self.orbit_camera = OrbitCamera(camera_pose)  # WASD through keys.pan_vector (camera.py)
         self.orbit_camera.parent = self.root
         self.view_root = self._build_view()
         self.ui_root = Entity(parent=camera.ui, name="simulation_ui")
@@ -58,11 +64,12 @@ class SimulationScreen(Entity):
             "step": lambda: self.session.step_once(),  # runs a tick only while paused
             "speed_up": lambda: self.session.speed_up(),
             "speed_down": lambda: self.session.speed_down(),
+            "save": self._save_with_toast,
             "reset": lambda: self._ask(CONFIRM_RESET, self._reset),
             "new": lambda: self._ask(CONFIRM_NEW, self._new),
-            "menu": self.app.show_menu,
+            "menu": self._to_menu,
             "focus": self._focus,
-            # "info" (M5) and "save" (F6) are not wired yet.
+            # "info" (M5) is not wired yet.
         }
         self._refresh_hud()
 
@@ -152,6 +159,38 @@ class SimulationScreen(Entity):
             # The ground point under the entity: orbit targets stay on y = 0 (decision M5).
             self.orbit_camera.focus((x, 0.0, z))
 
+    # save and autosave
+
+    def save(self) -> Path:
+        """Write the session and camera pose to the life form's slot. Raises ``SaveError``."""
+        data = build_save(self.session, self.orbit_camera.get_pose(), datetime.now().astimezone())
+        return self.app.store.write(self.session.lifeform_cls.id, data)
+
+    def autosave(self) -> bool:
+        """Save without a toast; on failure print one line to stderr. Never raises: a failed
+        autosave must not stop the menu or quitting."""
+        try:
+            self.save()
+        except Exception as exc:  # SaveError, or a life form's get_state failing
+            print(f"alife: autosave failed: {_one_line(exc)}", file=sys.stderr, flush=True)
+            return False
+        return True
+
+    def _save_with_toast(self) -> None:
+        try:
+            self.save()
+        except Exception as exc:  # SaveError, or a life form's get_state failing
+            print(f"alife: save failed: {_one_line(exc)}", file=sys.stderr, flush=True)
+            reason = exc.reason if isinstance(exc, SaveError) else type(exc).__name__
+            self.toast.show(SAVE_FAILED.format(reason=reason))
+            return
+        self.toast.show(SAVED)
+
+    def _to_menu(self) -> None:
+        # Save while the session and camera still exist; show_menu() closes this screen.
+        self.autosave()
+        self.app.show_menu()
+
     # confirm dialog, reset and new
 
     def _ask(self, message: str, on_yes: Callable[[], None]) -> None:
@@ -194,3 +233,8 @@ class SimulationScreen(Entity):
         destroy_tree(self.root)
         destroy_tree(self.ui_root)
         destroy(self)
+
+
+def _one_line(exc: BaseException) -> str:
+    text = " ".join(str(exc).split())
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__

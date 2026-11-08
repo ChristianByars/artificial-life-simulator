@@ -1,10 +1,11 @@
 """The app shell: one Ursina window, the clock, and the current screen (SPEC 3.1). GUI-only.
 
-Quit path: the window's close button, ``--smoke``, ``--screenshot`` and :meth:`App.quit` all close
-the window. Panda's window-event then makes ShowBase call ``userExit`` -> ``exitFunc``
-(:meth:`App._on_exit`: quit hooks, then close the screen) -> ``sys.exit()``. Panda does not always
-send that event (seen with a background window), so a per-frame check calls ``userExit`` itself
-once the window is gone.
+Quit path: the window's close button, Cmd+Q, ``--smoke``, ``--screenshot`` and :meth:`App.quit` all
+close the window (Cmd+Q is the app menu's Quit item: ``NSApp terminate:``, which Panda's
+``applicationShouldTerminate`` turns into closing every window, then cancels). Panda's window-event
+then makes ShowBase call ``userExit`` -> ``exitFunc`` (:meth:`App._on_exit`: autosave, quit hooks,
+then close the screen) -> ``sys.exit()``. Panda does not always send that event (seen with a
+background window), so a per-frame check calls ``userExit`` itself once the window is gone.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from ursina import Entity, Ursina, application, color, held_keys, window
 
 from alife import keys
 from alife.lifeforms import Lifeform, registry
+from alife.save import SaveError, restore, store_for_run
 from alife.screens.menu import TITLE, MenuScreen
 from alife.screens.simulation import SimulationScreen
 from alife.session import Session, new_seed
@@ -39,6 +41,12 @@ class App:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.lifeforms: dict[str, type[Lifeform]] = registry()
+        # <user data dir>/saves, or ALIFE_DATA_DIR. --smoke / --screenshot without ALIFE_DATA_DIR
+        # get a throwaway temp folder, so they never overwrite the user's saves (R21).
+        test_run = args.smoke is not None or args.screenshot is not None
+        self.store = store_for_run(test_run)
+        if test_run:
+            print(f"alife: test run, saves go to {self.store.root}", file=sys.stderr, flush=True)
         self.screen: MenuScreen | SimulationScreen | None = None
         self.exit_code = 0
         self._quit_hooks: list[Callable[[], None]] = []
@@ -83,6 +91,25 @@ class App:
         self._close_screen()
         self.screen = SimulationScreen(self, session)
 
+    def resume(self, lifeform_id: str) -> bool:
+        """Continue ``lifeform_id`` from its save: state, tick, speed and camera (SPEC §4).
+
+        A save that is missing, damaged or does not restore never crashes the app: print one line
+        to stderr and show the menu, whose card then shows the error. The file is left as it is.
+        """
+        try:
+            result = self.store.read(lifeform_id)
+            if result.status != "ok":
+                raise SaveError(result.message)
+            session, pose = restore(result.data, self.lifeforms)
+        except (SaveError, OSError) as exc:  # OSError: e.g. the saves folder cannot be read
+            print(f"alife: cannot continue {lifeform_id!r}: {exc}", file=sys.stderr, flush=True)
+            self.show_menu()
+            return False
+        self._close_screen()
+        self.screen = SimulationScreen(self, session, camera_pose=pose)
+        return True
+
     def _close_screen(self) -> None:
         if self.screen is not None:
             screen, self.screen = self.screen, None
@@ -93,9 +120,9 @@ class App:
     def run(self) -> int:
         if self.args.lifeform is not None:
             self.start(self.args.lifeform)
+        elif self.args.continue_id is not None:
+            self.resume(self.args.continue_id)  # falls back to the menu
         else:
-            if self.args.continue_id is not None:
-                print("alife: --continue is not wired yet (F6); showing the menu", file=sys.stderr)
             self.show_menu()
         tasks = self.ursina.taskMgr
         tasks.add(self._watch_window, "alife-watch-window")
@@ -121,14 +148,20 @@ class App:
             self.ursina.userExit()
 
     def add_quit_hook(self, hook: Callable[[], None]) -> None:
-        """Run ``hook`` on every quit path (window close, ``--smoke``, ``quit()``)."""
+        """Run ``hook`` on every quit path (window close, Cmd+Q, ``--smoke``, ``quit()``), after
+        the autosave."""
         self._quit_hooks.append(hook)
+
+    def _autosave(self) -> None:
+        """Save a running simulation on quit. ``autosave`` never raises: quitting goes on."""
+        if isinstance(self.screen, SimulationScreen):
+            self.screen.autosave()
 
     def _on_exit(self) -> None:
         if self._exiting:
             return
         self._exiting = True
-        for step in [*self._quit_hooks, self._close_screen]:
+        for step in [self._autosave, *self._quit_hooks, self._close_screen]:
             try:
                 step()
             except Exception:  # one failing hook must not stop the others, or the exit

@@ -413,6 +413,7 @@ INTEGRATION = textwrap.dedent(
             check("menu_text_uses_text_port", ported)
             no_stock_shaders("menu")
             app.screen.cards["demo"].start_button.on_click()
+            app.screen.dialog.confirm()  # Esc autosaved, so New asks first (R20)
         elif n == 31:
             s = app.screen
             check("start_button_starts_sim", isinstance(s, SimulationScreen))

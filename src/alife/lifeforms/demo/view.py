@@ -21,9 +21,10 @@ class DemoView:
         self.root = root
         self.dish = Entity(
             parent=root,
-            model=Circle(resolution=64),
+            # Circle defaults to radius .5; pass DISH_RADIUS so the visible dish and its
+            # collider match the sim's rim. No scale on the entity.
+            model=Circle(resolution=64, radius=DISH_RADIUS),
             rotation_x=90,  # lie flat: the circle's normal points up
-            scale=DISH_RADIUS,
             color=color.dark_gray,
             collider="box",
         )
@@ -39,7 +40,7 @@ class DemoView:
                 e = Entity(
                     parent=self.root,
                     model="sphere",
-                    scale=WALKER_RADIUS * 2,
+                    scale=WALKER_RADIUS * 2,  # the 'sphere' model has diameter 1
                     collider="sphere",
                 )
                 e.pick_id = w.id

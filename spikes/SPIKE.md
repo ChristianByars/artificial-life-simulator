@@ -81,9 +81,14 @@ is small: at 300 cells, without it `naive` p95 is 17.89 (vs 19.21) and `instance
 1. `loadPrcFileData('', 'gl-version 3 2')` before `Ursina()`. Without it macOS gives OpenGL 2.1 /
    GLSL 1.20.
 2. That core profile rejects Ursina 8.3's bundled `#version 130/140` shaders. The worst case is
-   `camera.overlay`, a full-window clear quad Ursina always creates. Its shader fails and it draws
-   **opaque black over the whole window**. Product code needs GLSL 150 ports of
+   `camera.overlay`, a full-window clear quad Ursina always creates (it gets
+   `unlit_with_fog_shader`). It draws **over the whole window**. Product code needs GLSL 150 ports of
    `unlit_with_fog_shader` (the default), `unlit_shader` and `text_shader`, which the HUD and menus need.
+   *Corrected in Plan 1 F2:* compiled ports alone still leave the window black. Ursina gives every
+   model `TransparencyAttrib.M_dual`, which Panda splits with fixed-function alpha tests the core
+   profile lacks, so the overlay writes RGBA (0,0,0,0). The fix is `m-dual false` before `Ursina()`
+   plus `discard` at alpha ≤ 0 in every shader (`src/alife/ui/shaders.py`). A missing `p3d_Color`
+   reads white, not black.
 3. Ursina 8's `color.rgba()` takes 0–1 floats; use `color.rgba32()` for 0–255.
 4. `vsync=` passed to `Ursina()` is ignored; set `sync-video` with `loadPrcFileData` first.
 5. Picking ray from-mask `BitMask32.allOn()`; a `CollisionPlane` must not inherit a rotated
@@ -91,7 +96,8 @@ is small: at 300 cells, without it `naive` p95 is 17.89 (vs 19.21) and `instance
 
 **Screenshots** work in-app (`--screenshot`, offscreen buffer) and from outside
 (`screencapture -l <CGWindowID>`). The spike's original "unsolved screenshot" finding was these
-scene bugs, not the capture.
+scene bugs, not the capture. *Plan 1 F2:* `base.win.save_screenshot()` also works and captures 3D
+plus UI (the offscreen buffer captures only the 3D camera); skip the first frames after launch.
 
 ## C. Tellurium per-cell test
 

@@ -15,7 +15,7 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
-from direct.task.Task import Task
+from direct.task import Task  # the module: Task.done / Task.cont are the status ints
 from panda3d.core import Filename, GraphicsWindow, WindowProperties, loadPrcFileData
 from ursina import Entity, Ursina, application, color, window
 
@@ -132,11 +132,12 @@ class App:
                 traceback.print_exc()
                 self.exit_code = 1
 
-    def _watch_window(self, task: Task) -> int:
+    def _watch_window(self, task: Task.Task) -> int:
         """Quit once the window is gone, even if Panda sent no window-event for it.
 
         Without the event ShowBase never calls ``userExit``, and the app would keep running with
-        no window and without its quit hooks.
+        no window and without its quit hooks. Only "closed" counts: an open window that Panda
+        reports as not valid (zero size, e.g. shrunk to no content height) keeps the app running.
         """
         if _window_open(self.ursina.win):
             self._window_seen_open = True
@@ -145,11 +146,11 @@ class App:
             return Task.done
         return Task.cont
 
-    def _smoke_task(self, task: Task) -> int:
+    def _smoke_task(self, task: Task.Task) -> int:
         self.quit()
         return Task.done
 
-    def _screenshot_task(self, task: Task) -> int:
+    def _screenshot_task(self, task: Task.Task) -> int:
         if not _window_open(self.ursina.win):
             return Task.cont
         self._frames_open += 1
@@ -186,7 +187,9 @@ class App:
 
 
 def _window_open(win: GraphicsWindow | None) -> bool:
-    return win is not None and win.is_valid() and win.get_properties().get_open()
+    """Open by Panda's own flag. Not ``is_valid()``: that is also False for a zero-size window,
+    which is still open (only ``quit()`` needs it, to know a close request can be served)."""
+    return win is not None and win.get_properties().get_open()
 
 
 def _switch_off(entity: Entity) -> None:

@@ -128,6 +128,68 @@ def test_ports_keep_stock_uniforms_and_inputs():
         assert port.continuous_input.keys() == stock.continuous_input.keys(), port.name
 
 
+# --- window watchdog (headless: stub windows, imports Ursina, opens nothing) -----------------
+
+
+class StubWindow:
+    """Stands in for a Panda window. As in Panda, "open" and "valid" are separate: is_valid()
+    is also False for a zero-size window, which is still open."""
+
+    def __init__(self, is_open: bool = True, valid: bool = True) -> None:
+        self.open = is_open
+        self.valid = valid
+
+    def is_valid(self) -> bool:
+        return self.valid
+
+    def get_properties(self) -> types.SimpleNamespace:
+        return types.SimpleNamespace(get_open=lambda: self.open)
+
+
+def watchdog(win: StubWindow | None):
+    """Drive App._watch_window against a stub; returns (tick, exits, fake_app)."""
+    from alife.app import App
+
+    exits: list[bool] = []
+    ursina = types.SimpleNamespace(win=win, userExit=lambda: exits.append(True))
+    fake_app = types.SimpleNamespace(ursina=ursina, _window_seen_open=False)
+    return (lambda: App._watch_window(fake_app, None)), exits, fake_app
+
+
+def test_watchdog_keeps_running_for_open_zero_size_window():
+    from direct.task import Task
+
+    win = StubWindow()
+    tick, exits, _ = watchdog(win)
+    assert tick() == Task.cont
+    win.valid = False  # e.g. shrunk to 0 px content height, or reported as 0x0 when minimised
+    for _ in range(5):
+        assert tick() == Task.cont
+    assert exits == []
+
+
+def test_watchdog_quits_when_window_closes_or_goes_away():
+    from direct.task import Task
+
+    win = StubWindow()
+    tick, exits, fake_app = watchdog(win)
+    tick()
+    win.open = False
+    assert tick() == Task.done and exits == [True]
+
+    tick, exits, fake_app = watchdog(StubWindow())
+    tick()
+    fake_app.ursina.win = None
+    assert tick() == Task.done and exits == [True]
+
+
+def test_watchdog_waits_until_window_first_opens():
+    tick, exits, _ = watchdog(StubWindow(is_open=False, valid=False))  # still opening
+    for _ in range(5):
+        tick()
+    assert exits == []
+
+
 # --- the app (GUI: each test opens a short, self-closing window) -----------------------------
 
 

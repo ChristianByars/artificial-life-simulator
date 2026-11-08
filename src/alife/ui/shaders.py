@@ -17,10 +17,17 @@ Each port keeps the stock shader's uniforms, inputs and maths, with three change
    (0, 0, 0, 0) over the whole frame: the black window M0 found. :func:`configure_panda` sets
    ``m-dual false`` so Panda draws M_dual as plain alpha blending, and the ``discard`` stands in
    for the blended pass's ``alpha > 0`` test, so invisible pixels write no depth.
-3. Text only: an outline sample that falls outside the glyph page reads as transparent. Ursina's
-   default ``outline_offset`` (10, 10) pushes that sample off the page on purpose. On the core
-   profile Panda stores alpha-only font pages as a red channel swizzled to alpha, and the swizzle
-   turns the page's border colour (1, 1, 1, 0) into alpha 1, so every glyph drew as a solid box.
+3. Text only: the glyph page is sampled as if its border were transparent. On the core profile
+   Panda stores alpha-only font pages as a red channel swizzled to alpha, and the swizzle turns
+   the page's border colour (1, 1, 1, 0) into alpha 1. Any sample that touches the border then
+   reads opaque: Ursina's default ``outline_offset`` (10, 10), which pushes the outline sample off
+   the page on purpose, drew every glyph as a solid box; and glyphs in the page's top row or left
+   column (Panda packs them half a texel from the edge) got faint 1-px lines wherever the
+   supersampling taps crossed it. ``page_alpha`` filters bilinearly with ``texelFetch`` and
+   reads texels outside the page as 0, which is what the border colour means.
+
+Also for text, :func:`configure_panda` widens the font atlas's glyph margin (see
+``PRC_SETTINGS``), so the supersampling taps of small text don't reach the next glyph.
 
 Checked in F2: a missing ``p3d_Color`` column reads as white on this driver, so the ports keep
 Ursina's vertex-colour term. (The M0 note that it reads black was caused by the overlay bug.)
@@ -43,6 +50,11 @@ from alife.ui import iter_entities
 PRC_SETTINGS = (
     "gl-version 3 2",  # without it macOS gives OpenGL 2.1 / GLSL 1.20 (SPIKE.md B)
     "m-dual false",  # draw M_dual as alpha blending; see change 2 in the module docstring
+    # Empty texels around each glyph in Panda's font atlas (default 2). The text shader's
+    # supersampling taps plus bilinear filtering reach about 2 texels past a glyph's cell at HUD
+    # size (text drawn at ~1/3 of atlas resolution), so with the default they pick up the next
+    # glyph: faint 1-px dashes along cell edges. 4 keeps them clear down to ~1/3 of HUD size.
+    "text-texture-margin 4",
 )
 
 UNLIT_WITH_FOG_VERT = """#version 150
@@ -174,24 +186,39 @@ out vec4 FINAL_COLOR;
 
 in vec4 vertex_color;
 
+// F2: glyph-page alpha with bilinear filtering (the font's filter) done by hand, so a texel
+// outside the page reads 0 instead of the alpha-swizzled border colour (change 3, docstring).
+float texel_alpha(ivec2 texel, ivec2 size) {
+    if (any(lessThan(texel, ivec2(0))) || any(greaterThanEqual(texel, size))) return 0.0;
+    return texelFetch(p3d_Texture0, texel, 0).a;
+}
+
+float page_alpha(vec2 uv) {
+    ivec2 size = textureSize(p3d_Texture0, 0);
+    vec2 t = uv * vec2(size) - 0.5;
+    vec2 base = floor(t);
+    vec2 f = t - base;
+    ivec2 i = ivec2(base);
+    float bottom = mix(texel_alpha(i, size), texel_alpha(i + ivec2(1, 0), size), f.x);
+    float top = mix(texel_alpha(i + ivec2(0, 1), size), texel_alpha(i + ivec2(1, 1), size), f.x);
+    return mix(bottom, top, f.y);
+}
+
 void main() {
-    float dist = texture(p3d_Texture0, uvs).a;
+    float dist = page_alpha(uvs);  // F2: was texture(p3d_Texture0, uvs).a; same below
     vec2 width = vec2(0.5-fwidth(dist), 0.5+fwidth(dist));
     float alpha = smoothstep(width.x, width.y, dist);
     //supersampling
     float scale = 0.354; // half of 1/sqrt2 - value from internet(???)
     vec2 duv = scale * (dFdx(uvs) + dFdy(uvs));
     vec4 box = vec4(uvs-duv, uvs+duv);
-    alpha +=0.5*(smoothstep(width.x, width.y, texture(p3d_Texture0, box.xy).a)
-            +smoothstep(width.x, width.y, texture(p3d_Texture0, box.zw).a)
-            +smoothstep(width.x, width.y, texture(p3d_Texture0, box.xw).a)
-            +smoothstep(width.x, width.y, texture(p3d_Texture0, box.zy).a));
+    alpha +=0.5*(smoothstep(width.x, width.y, page_alpha(box.xy))
+            +smoothstep(width.x, width.y, page_alpha(box.zw))
+            +smoothstep(width.x, width.y, page_alpha(box.xw))
+            +smoothstep(width.x, width.y, page_alpha(box.zy)));
     alpha /= 3.0; //weighted average, 1*1 + 4*0.5 = 3, so divide by 3
     //outline
-    // F2: a sample outside the glyph page reads as transparent (change 3, module docstring).
-    vec2 outline_uv = uvs-outline_offset;
-    bool off_page = any(lessThan(outline_uv, vec2(0.0))) || any(greaterThan(outline_uv, vec2(1.0)));
-    float outline = off_page ? 0.0 : pow(texture(p3d_Texture0, outline_uv).a, outline_power);
+    float outline = pow(page_alpha(uvs-outline_offset), outline_power);
     vec4 result = mix(vec4(vertex_color.rgb, outline_color.a * outline), vertex_color, alpha);
     if (result.a <= 0.0) discard;  // F2: stands in for M_dual's alpha test (module docstring)
     FINAL_COLOR = result;

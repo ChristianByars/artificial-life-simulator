@@ -217,6 +217,14 @@ def colours(path: Path) -> set[tuple[int, int, int]]:
         return {c for _count, c in rgb.getcolors(maxcolors=rgb.width * rgb.height)}
 
 
+def colour_counts(path: Path) -> dict[tuple[int, int, int], int]:
+    from PIL import Image
+
+    with Image.open(path) as im:
+        rgb = im.convert("RGB")
+        return {c: n for n, c in rgb.getcolors(maxcolors=rgb.width * rgb.height)}
+
+
 def has_colour(found: set[tuple[int, int, int]], rgb: tuple[int, int, int], tol: int = 2) -> bool:
     return any(all(abs(a - b) <= tol for a, b in zip(c, rgb, strict=True)) for c in found)
 
@@ -289,8 +297,8 @@ INTEGRATION = textwrap.dedent(
     """
     import sys
 
-    from panda3d.core import Filename
-    from ursina import Entity, application, camera, color, destroy, scene, window
+    from panda3d.core import Filename, SamplerState, Texture
+    from ursina import Entity, Mesh, Text, application, camera, color, destroy, scene, window
     from ursina.shaders.text_shader import text_shader
     from ursina.shaders.unlit_shader import unlit_shader
     from ursina.shaders.unlit_with_fog_shader import unlit_with_fog_shader
@@ -333,6 +341,9 @@ INTEGRATION = textwrap.dedent(
             # shader setter only runs on a second assignment), so its port is the fog port.
             check("overlay_uses_port", camera.overlay.shader is shaders.UNLIT_WITH_FOG)
             check("default_shader_is_port", Entity.default_shader is shaders.UNLIT_WITH_FOG)
+            # Glyph margin wide enough for the text shader's taps (shaders.PRC_SETTINGS).
+            font = next(e for e in iter_entities() if isinstance(e, Text)).font
+            check("font_margin_fits_taps", font.get_texture_margin() >= 4)
             no_stock_shaders("sim")
             seen["walkers"] = walkers
             seen["root"] = s.root
@@ -347,7 +358,32 @@ INTEGRATION = textwrap.dedent(
             green = Entity(parent=camera.ui, model="quad", scale=0.1, x=0.3, z=-10)
             green.color = color.rgba32(*GREEN)
             green.render_queue = 1
-            seen["probes"] = (blend, hole, green)
+            # 3) Font-page edge: the text port on an alpha-only texture set up like a Panda
+            #    font page (border colour (1,1,1,0)), with UVs running past the page on every
+            #    side. Only the centre texel is opaque. Off-page samples must read transparent.
+            page = Texture("page_probe")
+            page.setup_2d_texture(8, 8, Texture.T_unsigned_byte, Texture.F_alpha)
+            texels = bytearray(64)
+            texels[4 * 8 + 4] = 255
+            page.set_ram_image(bytes(texels))
+            page.set_wrap_u(SamplerState.WM_border_color)
+            page.set_wrap_v(SamplerState.WM_border_color)
+            page.set_border_color((1, 1, 1, 0))
+            page.set_minfilter(SamplerState.FT_linear)
+            page.set_magfilter(SamplerState.FT_linear)
+            quad = Mesh(
+                vertices=[(-0.5, -0.5, 0), (0.5, -0.5, 0), (0.5, 0.5, 0), (-0.5, 0.5, 0)],
+                triangles=[(0, 1, 2), (0, 2, 3)],
+                uvs=[(-1, -1), (2, -1), (2, 2), (-1, 2)],
+                colors=[color.magenta] * 4,
+            )
+            # shader= in the constructor: assigning entity.shader later on a UI entity gets
+            # swapped to unlit_shader by Ursina's Entity.shader_setter.
+            edge = Entity(
+                parent=camera.ui, model=quad, scale=0.2, x=-0.35, z=-5, shader=shaders.TEXT
+            )
+            edge.model.set_texture(page, 1)
+            seen["probes"] = (blend, hole, green, edge)
         elif n == 23:
             app.ursina.win.save_screenshot(Filename.from_os_specific(sys.argv[1]))
             for probe in seen["probes"]:
@@ -399,6 +435,7 @@ INTEGRATION_CHECKS = {
     "walkers_use_fog_port",
     "overlay_uses_port",
     "default_shader_is_port",
+    "font_margin_fits_taps",
     "sim_no_stock_shaders",
     "render_mode_untouched",
     "builtin_keys_ignored",
@@ -435,12 +472,19 @@ def test_app_integration(tmp_path, data_dir):
     assert not failed, (failed, proc.stdout[-3000:])
     assert "QUIT HOOK RAN" in proc.stdout  # the quit path ran the hooks (F6 autosaves there)
     found = colours(tmp_path / "probes.png")
+    found_counts = colour_counts(tmp_path / "probes.png")
     dish = to_rgb255(color.dark_gray)
     # Half-transparent quads blend (needs m-dual false: Panda's M_dual split relies on
     # fixed-function alpha tests the core profile lacks, so the quad would come out solid red).
     assert has_colour(found, mix(dish, (255, 0, 0), 128 / 255), tol=3)
     # Invisible pixels write no depth (the ports' discard), so the green quad shows.
     assert has_colour(found, (0, 255, 0))
+    # Font-page edge: the opaque centre texel shows (the probe rendered) ...
+    magenta = [c for c in found_counts if has_colour({c}, (255, 0, 255), tol=10)]
+    assert magenta, "page-edge probe did not render"
+    # ... but the off-page area, about 8/9 of the quad, stays clear. With hardware filtering
+    # the alpha-swizzled border colour reads as alpha 1 and paints it solid (thousands of px).
+    assert sum(found_counts[c] for c in magenta) < 400
 
 
 WINDOW_GONE = textwrap.dedent(

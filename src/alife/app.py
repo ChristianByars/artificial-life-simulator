@@ -17,8 +17,9 @@ from pathlib import Path
 
 from direct.task import Task  # the module: Task.done / Task.cont are the status ints
 from panda3d.core import Filename, GraphicsWindow, WindowProperties, loadPrcFileData
-from ursina import Entity, Ursina, application, color, window
+from ursina import Entity, Ursina, application, color, held_keys, window
 
+from alife import keys
 from alife.lifeforms import Lifeform, registry
 from alife.screens.menu import TITLE, MenuScreen
 from alife.screens.simulation import SimulationScreen
@@ -65,6 +66,8 @@ class App:
         window.color = color.rgba32(*BACKGROUND_RGB)
         self._disable_ursina_builtins()
         self.ursina.exitFunc = self._on_exit
+        # Created before any screen, so Ursina offers it every key first (screens eat keys).
+        self.key_logger = KeyLogger() if args.log_keys else None
 
     # screens
 
@@ -184,6 +187,20 @@ class App:
         # Editor UI: cog button and menu (reload and editor-camera buttons), FPS and counters.
         for entity in (window.cog_button, window.cog_menu, window.editor_ui):
             _switch_off(entity)
+
+
+class KeyLogger(Entity):
+    """``--log-keys``: print each input event as Ursina names it, with the modifiers held.
+
+    One line per event (``'s' command``), so the user can check the key names in ``alife.keys``
+    on their own keyboard.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(name="key_logger")
+
+    def input(self, key: str) -> None:
+        print(keys.describe(key, keys.held_mods(held_keys)), flush=True)
 
 
 def _window_open(win: GraphicsWindow | None) -> bool:

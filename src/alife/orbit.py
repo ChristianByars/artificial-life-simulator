@@ -16,8 +16,13 @@ from dataclasses import dataclass
 
 Vec3 = tuple[float, float, float]
 
-# SPEC section 4 default camera pose (Ursina position / rotation).
-DEFAULT_POSE: dict[str, list[float]] = {"position": [0, 8, -12], "rotation": [35, 0, 0]}
+# Default camera pose (Ursina position / rotation; SPEC section 4 format). Our assumption (ruling
+# R18): 45 degrees down, aimed at the dish centre, 32 * sqrt(2) = 45.3 units away. Ursina's
+# horizontal FOV is 40 degrees, so a wide window is limited by its height. The radius-10 rim
+# reaches 91% of the way from the frame's centre to its edge at 16:9, and 78% in Ursina's default
+# window on this Mac (1209 x 785). SPEC section 4's example pose ([0, 8, -12] / [35, 0, 0]) showed
+# only part of the dish (F2).
+DEFAULT_POSE: dict[str, list[float]] = {"position": [0, 32, -32], "rotation": [45, 0, 0]}
 
 # M5: pitch and distance limits. Our assumption (view comfort, not biology).
 PITCH_MIN = 10.0  # our assumption

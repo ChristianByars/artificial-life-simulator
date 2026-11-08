@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 from ursina import Entity, camera, held_keys, mouse, time
 
+from alife import keys
 from alife import orbit as om
 
 # Tunables: all our assumptions (feel, not biology).
@@ -26,14 +27,11 @@ SCROLL_DOWN = "scroll down"
 
 
 def held_pan_vector() -> tuple[float, float]:
-    """(right, forward) from W A S D, each -1..1.
+    """(right, forward) from W A S D held now, each -1..1 (``keys.pan_vector``).
 
-    Reads ``held_keys`` directly until F5's ``keys.pan_vector`` lands; F5 swaps this call by
-    passing its own function as ``OrbitCamera(pan_source=...)``.
+    Zero while Command or Control is held, so Cmd+S / Ctrl+S saves without panning back.
     """
-    right = held_keys["d"] - held_keys["a"]
-    forward = held_keys["w"] - held_keys["s"]
-    return float(right), float(forward)
+    return keys.pan_vector(held_keys)
 
 
 class OrbitCamera(Entity):

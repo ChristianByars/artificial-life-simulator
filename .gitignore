@@ -8,3 +8,5 @@ __pycache__/
 dist/
 build/
 spikes/**/out/
+SPEC.md
+TASKS.md

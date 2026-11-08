@@ -10,7 +10,7 @@ libroadrunner 2.11.0, tellurium 2.2.13.1.
 
 ## Decisions
 
-Status: **proposed**. Each needs the user's OK at the M0 gate.
+Status: **approved** by the user at the M0 gate, 2026-11-07.
 
 | # | Decision | Proposal | Evidence |
 |---|---|---|---|
@@ -130,10 +130,11 @@ Script: `tellurium_cycle/cycle_spike.py` (checks) and `bench_cycle.py` (timing).
 Explicit RK4 blows up within 2 steps at the tick size (`dt_model ≈ 0.0099`); it is only stable
 below `dt ≈ 2e-6`. libroadrunner's CVODE handles it.
 
-## Open items for the user
+## Open items
 
-1. **Spec gap, §6.1 fallback 2** ("integrate them ourselves"): plain RK4 cannot work here (stiffness,
+1. **§6.1 fallback 2** ("integrate them ourselves"): plain RK4 cannot work here (stiffness,
    above). If that fallback is ever needed, it has to be an implicit solver (e.g. Rosenbrock with
-   the model's 6 × 6 Jacobian, batched in numpy). Proposal: amend the fallback's wording.
+   the model's 6 × 6 Jacobian, batched in numpy). SPEC.md stays as is; the user: "it was just an
+   initial spec to get you started." Not needed while D2 holds.
 2. **Tyson match is qualitative** (regime and shape), not a digitised published number.
 3. **8× speed budget.** At 8× a frame runs 8 ticks: ~9 ms of cell cycle at 300 cells (p95), plus ~4.6 ms render, before physics and nutrients. The planned tick cap (16 per frame, backlog dropped) keeps the app responsive, but 8× may run slower than 8× at 300 cells. Measure in the full app (Plan 2).

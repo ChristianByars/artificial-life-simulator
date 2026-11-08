@@ -24,7 +24,10 @@ REFERENCE_PERIOD = 35.60
 
 PARAMS: dict[str, Param] = {
     "initial_cells": Param("Initial cells", 20, 1, 200, OUR_ASSUMPTION, "cells"),
-    "nutrient_regen": Param("Nutrient regen rate", 0.02, 0.0, 0.5, OUR_ASSUMPTION, "1/s"),
+    # Tuned in S6 with YIELD below: regrowth (in energy) about covers the upkeep of the ~200
+    # cells the dish's initial food makes, so the population levels off after ~5 minutes
+    # instead of growing on (0.02 with YIELD 1.0 gave 3272 cells at 10 minutes).
+    "nutrient_regen": Param("Nutrient regen rate", 0.0025, 0.0, 0.5, OUR_ASSUMPTION, "1/s"),
     "diffusion": Param("Diffusion rate", 0.05, 0.0, 0.5, OUR_ASSUMPTION, "units^2/s"),
     # With the energy constants below, test_starvation_arrest holds for upkeep ~0.025-0.07
     # (measured in S5): lower, a starving cell still divides after the first period; higher,
@@ -52,9 +55,17 @@ GROWTH_COST = ENERGY_REF / MAX_AREA
 # Feeding: Michaelis-Menten uptake (textbook), rate = VMAX * area * N / (KM + N), where N is
 # the nutrient concentration under the cell's centre. Rate constants are our assumption,
 # scaled to the dish (SPEC §6.1).
-VMAX = 1.0  # our assumption: nutrient per model minute per dish unit^2 of cell, saturated
+# our assumption: energy per unit of nutrient. It sets how many cells the dish feeds: division
+# splits a cell's energy without needing growth, so a colony divides until most cells hold too
+# little to cycle. The full grid (400 nutrient) is worth 120 energy, ~200 cells (tuned in S6;
+# at 1.0 the colony passed 500 cells by 5 minutes and kept climbing).
+YIELD = 0.3
+# our assumption: nutrient per model minute per dish unit^2 of cell, saturated. VMAX x YIELD
+# stays 1 energy per model minute per unit^2 (the S5 value), so a cell's energy intake at a
+# given N is unchanged: test_doubling_time runs the same, and uptake still covers upkeep above
+# N = upkeep x KM / (VMAX x YIELD - upkeep), ~0.026 at the default upkeep.
+VMAX = 1.0 / YIELD
 KM = 0.5  # our assumption: half-saturation concentration (the grid's capacity is 1)
-YIELD = 1.0  # our assumption: energy per unit of nutrient
 
 # Motion (sim time).
 MOTILITY = 0.01  # our assumption: Brownian diffusion coefficient, dish units^2/s, visible motion

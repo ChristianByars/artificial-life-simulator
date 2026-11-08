@@ -28,7 +28,7 @@ DEFAULT_POSE: dict[str, list[float]] = {"position": [0, 32, -32], "rotation": [4
 PITCH_MIN = 10.0  # our assumption
 PITCH_MAX = 89.0  # our assumption
 DIST_MIN = 2.0  # our assumption
-DIST_MAX = 60.0  # our assumption
+DIST_MAX = 90.0  # our assumption: about 2x the default 45.3 (60 left only 1.3x of zoom-out)
 
 # A level or upward-looking camera never meets the ground plane; pretend the target is this far
 # ahead instead (F4 brief). Our assumption.

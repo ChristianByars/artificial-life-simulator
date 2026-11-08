@@ -22,4 +22,5 @@ def test_demo_lifeform_end_to_end():
     lf.on_dish_click(Vec2(0, 0), {"shift"})
     assert lf.stats() == {"walkers": 13}
     lf.on_pick(4)
-    assert lf.get_state()["selected"] == 4
+    assert lf.sim.selected == 4
+    assert "selected" not in lf.get_state()  # I3: selection is UI state, never saved

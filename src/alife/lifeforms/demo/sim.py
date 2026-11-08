@@ -28,7 +28,7 @@ class WalkerSim:
         self.rng = rng
         self.walkers: list[Walker] = []
         self.next_id = 0
-        self.selected: int | None = None
+        self.selected: int | None = None  # UI state (I3): never saved; the screen clears it
         for _ in range(count):
             r = DISH_RADIUS * SPAWN_FRACTION * math.sqrt(rng.random())  # uniform over the disc
             a = rng.random() * math.tau
@@ -53,13 +53,12 @@ class WalkerSim:
     def get_state(self) -> dict:
         return {
             "next_id": self.next_id,
-            "selected": self.selected,
             "walkers": [{"id": w.id, "position": w.position.to_list()} for w in self.walkers],
         }
 
     def set_state(self, state: dict) -> None:
+        # Saves written before I3 also carry "selected"; it is UI state, so it is ignored.
         self.next_id = int(state["next_id"])
-        self.selected = state["selected"]
         self.walkers = [
             Walker(int(d["id"]), Vec2.from_list(d["position"])) for d in state["walkers"]
         ]

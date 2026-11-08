@@ -48,6 +48,12 @@ def test_save_needs_cmd_or_ctrl():  # Review Focus 5, decision U1
     assert action_for("s", frozenset({"alt"})) is None
 
 
+def test_save_shortcut_keys_name():  # M7: save.SAVE_KEYS is the save file's keys
+    assert keys.SAVE_SHORTCUT_KEYS == ("s",)
+    assert keys.BINDINGS["save"] is keys.SAVE_SHORTCUT_KEYS
+    assert not hasattr(keys, "SAVE_KEYS")
+
+
 def test_save_fires_once_for_cmd_s():
     # Cmd+S reaches Entity.input as the raw "s" and then as "meta-s" (Ursina strips only the
     # control-, shift- and alt- prefixes). Only the first may save, or one press saves twice.
@@ -224,6 +230,7 @@ CONTROLS = textwrap.dedent(
     from alife.__main__ import parse_args
     from alife.app import App
     from alife.geometry import DISH_RADIUS
+    from alife.lifeforms.demo import DemoLifeform
     from alife.orbit import DEFAULT_POSE
     from alife.screens.menu import MenuScreen
     from alife.screens.simulation import SimulationScreen
@@ -231,6 +238,17 @@ CONTROLS = textwrap.dedent(
 
     shots = Path(sys.argv[1])
     app = App(parse_args(["--lifeform", "demo", "--seed", "1", "--log-keys"]))
+    # Every on_pick call, as (life form, id): the screen must clear each new view's pick (I3).
+    pick_calls = []
+    _on_pick = DemoLifeform.on_pick
+
+
+    def spy_on_pick(self, entity_id):
+        pick_calls.append((self, entity_id))
+        _on_pick(self, entity_id)
+
+
+    DemoLifeform.on_pick = spy_on_pick
     A = K.ascii_key
     LETTERS = set("abcdefghijklmnopqrstuvwxyz0123456789")
 
@@ -302,17 +320,31 @@ CONTROLS = textwrap.dedent(
     DISH_SPOTS = ((0, -6), (5, -5), (-5, -5), (6, 0), (-6, 0), (0, 6), (3, 3), (-3, -3))
 
 
-    def hover_dish(exclude=()):
-        # Point at dish spots until one hovers the dish itself (not a walker in front of it).
-        for spot in DISH_SPOTS:
-            if spot in exclude:
-                continue
-            _, px, py, _ = world_to_pixels((spot[0], 0, spot[1]))
-            point_at(px, py)
-            yield 3
-            if getattr(mouse.hovered_entity, "is_dish", False):
-                return spot, mouse.world_point
-        return None, None
+    def bare_spot(sim):
+        # The dish spot farthest from every walker (the sim is paused): a plain click there
+        # must hit the dish, not pick a walker. Shift+click needs no such spot (I1).
+        def room(spot):
+            return min(math.hypot(w.position.x - spot[0], w.position.y - spot[1])
+                       for w in sim.walkers)
+        spot = max(DISH_SPOTS, key=room)
+        return spot, room(spot)
+
+
+    def point_at_world(p):
+        _, px, py, _ = world_to_pixels(p)
+        point_at(px, py)
+
+
+    def shift_click():
+        down(K.shift()); down(K.lshift())
+        press(M.one())
+        up(K.lshift()); up(K.shift())
+
+
+    def from_centre(e):
+        w, h = window.size
+        _, px, py, _ = world_to_pixels(e.world_position)
+        return abs(px - w / 2) + abs(py - h / 2)
 
 
     def scenario():
@@ -320,6 +352,7 @@ CONTROLS = textwrap.dedent(
         s = app.screen
         sim = s.session.lifeform.sim
         check("starts_in_sim", isinstance(s, SimulationScreen))
+        check("start_clears_pick", (s.session.lifeform, None) in pick_calls)
         check("hud_first_line_is_name", hud(s)[:1] == ["Random walkers (dev)"], hud(s))
         check("hud_running_not_paused", "PAUSED" not in hud(s), hud(s))
         ticking = s.session.tick > 0 and any(t.startswith("Tick ") for t in hud(s))
@@ -400,38 +433,77 @@ CONTROLS = textwrap.dedent(
         yield 3
 
         # the picked walker goes away, as a dead cell would (its view disables the entity):
-        # the HUD stops showing it and F does nothing
+        # the HUD stops showing it, F does nothing, and the life form's pick clears too (I3)
         sim.walkers = [wk for wk in sim.walkers if wk.id != picked_id]
         yield 3
         check("gone_pick_not_shown", not any(t.startswith("Selected") for t in hud(s)), hud(s))
+        check("gone_pick_clears_lifeform", sim.selected is None and s.picked is None, sim.selected)
         press(A("f"))
         yield 2
         check("gone_pick_no_focus", s.orbit_camera.state.target == (0.0, 0.0, 0.0))
 
-        # Shift+click on the dish adds a walker where the dish was hit
-        spot, dish_hit = yield from hover_dish()
-        check("dish_hover_has_world_point", dish_hit is not None)
-        count = len(sim.walkers)
-        down(K.shift()); down(K.lshift())
+        # pick walker B, then a plain click on bare dish clears the pick
+        views = s.session.lifeform.view.entities
+        walker_b, walker_c = sorted((views[wk.id] for wk in sim.walkers), key=from_centre)[:2]
+        point_at_world(walker_b.world_position)
+        yield 3
         press(M.one())
-        up(K.lshift()); up(K.shift())
+        yield 3
+        check("click_picks_b", sim.selected == walker_b.pick_id and s.picked is walker_b,
+              sim.selected)
+        spot, room = bare_spot(sim)
+        point_at_world((spot[0], 0, spot[1]))
+        yield 3
+        dish_hit = mouse.world_point if getattr(mouse.hovered_entity, "is_dish", False) else None
+        check("dish_hover_has_world_point", dish_hit is not None,
+              (repr(mouse.hovered_entity), room))
+        press(M.one())
+        yield 3
+        check("dish_click_clears_pick", sim.selected is None and s.picked is None, sim.selected)
+        point_at_world(walker_b.world_position)
+        yield 3
+        press(M.one())
+        yield 3
+
+        # I1: Shift+click over another walker C acts on the dish behind it: it adds a walker
+        # where the mouse ray meets the dish (just behind C's centre) and keeps B picked
+        point_at_world(walker_c.world_position)
+        yield 3
+        hovered = mouse.hovered_entity
+        hovered_id = getattr(hovered, "pick_id", None)
+        check("hover_other_walker", hovered_id not in (None, walker_b.pick_id), repr(hovered))
+        count = len(sim.walkers)
+        shift_click()
+        yield 3
+        added = sim.walkers[-1].position if len(sim.walkers) == count + 1 else None
+        hx, _, hz = hovered.world_position
+        check("shift_click_walker_adds", added is not None
+              and math.hypot(added.x - hx, added.y - hz) < 0.5, (count, len(sim.walkers), added))
+        check("shift_click_keeps_pick", sim.selected == walker_b.pick_id and s.picked is walker_b
+              and f"Selected #{walker_b.pick_id}" in hud(s), (sim.selected, hud(s)))
+
+        # Shift+click on bare dish adds a walker where the dish was hit. (Ursina's hit is on the
+        # dish's box collider, about 0.001 above y = 0, so it sits ~0.001 nearer the camera.)
+        point_at_world((spot[0], 0, spot[1]))
+        yield 3
+        count = len(sim.walkers)
+        shift_click()
         yield 3
         added = sim.walkers[-1].position if len(sim.walkers) == count + 1 else None
         check("shift_click_dish_adds", added is not None and dish_hit is not None
-              and abs(added.x - dish_hit[0]) < 1e-4 and abs(added.y - dish_hit[2]) < 1e-4,
+              and abs(added.x - dish_hit[0]) < 0.01 and abs(added.y - dish_hit[2]) < 0.01,
               (count, len(sim.walkers), added, dish_hit))
-        check("shift_click_keeps_pick", sim.selected == picked_id, sim.selected)
+        check("shift_click_dish_keeps_pick", sim.selected == walker_b.pick_id, sim.selected)
 
-        # a plain click on the dish, then on empty space, both clear the pick. (Not on the spot
-        # just clicked: the walker added there is in front of the dish, so it would be picked.)
-        other, _ = yield from hover_dish(exclude={spot})
-        press(M.one())
-        yield 3
-        check("dish_click_clears_pick", other is not None and sim.selected is None, sim.selected)
-        s.session.lifeform.on_pick(picked_id)
-        point_at(3, 3)  # top-left window corner: off the dish
+        # off the dish (top-left window corner): Shift+click does nothing, a click clears the pick
+        point_at(3, 3)
         yield 3
         check("corner_hovers_nothing", mouse.hovered_entity is None, repr(mouse.hovered_entity))
+        count = len(sim.walkers)
+        shift_click()
+        yield 3
+        check("shift_click_off_dish_noop", len(sim.walkers) == count
+              and sim.selected == walker_b.pick_id, (count, len(sim.walkers), sim.selected))
         press(M.one())
         yield 3
         check("empty_click_clears_pick", sim.selected is None, sim.selected)
@@ -481,6 +553,7 @@ CONTROLS = textwrap.dedent(
         check("reset_stays_paused", s.session.paused)
         check("hud_paused_after_reset", "PAUSED" in hud(s), hud(s))
         check("reset_drops_pick", not any(t.startswith("Selected") for t in hud(s)), hud(s))
+        check("reset_clears_lifeform_pick", (s.session.lifeform, None) in pick_calls)
         check("old_view_destroyed", old_root.is_empty() and not any(alive(e) for e in old_walkers))
         new_walkers = s.session.lifeform.view.entities
         fresh = len(new_walkers) == 30 and all(alive(e) for e in new_walkers.values())
@@ -501,6 +574,7 @@ CONTROLS = textwrap.dedent(
         press(M.one())
         yield 3
         check("yes_starts_new", s.dialog is None and s.session.seed != seed and s.session.tick == 0)
+        check("new_clears_lifeform_pick", (s.session.lifeform, None) in pick_calls)
 
         # resume, then a toast (F6 shows "Saved" through it)
         press(K.space())
@@ -542,6 +616,7 @@ CONTROLS = textwrap.dedent(
 
 CONTROLS_CHECKS = {
     "starts_in_sim",
+    "start_clears_pick",
     "hud_first_line_is_name",
     "hud_running_not_paused",
     "hud_ticks",
@@ -560,12 +635,18 @@ CONTROLS_CHECKS = {
     "hud_selected",
     "f_focuses",
     "gone_pick_not_shown",
+    "gone_pick_clears_lifeform",
     "gone_pick_no_focus",
+    "click_picks_b",
     "dish_hover_has_world_point",
-    "shift_click_dish_adds",
-    "shift_click_keeps_pick",
     "dish_click_clears_pick",
+    "hover_other_walker",
+    "shift_click_walker_adds",
+    "shift_click_keeps_pick",
+    "shift_click_dish_adds",
+    "shift_click_dish_keeps_pick",
     "corner_hovers_nothing",
+    "shift_click_off_dish_noop",
     "empty_click_clears_pick",
     "dialog_closed_at_start",
     "r_opens_dialog",
@@ -579,12 +660,14 @@ CONTROLS_CHECKS = {
     "reset_stays_paused",
     "hud_paused_after_reset",
     "reset_drops_pick",
+    "reset_clears_lifeform_pick",
     "old_view_destroyed",
     "view_rebuilt",
     "f_without_pick_noop",
     "n_opens_dialog",
     "hover_yes",
     "yes_starts_new",
+    "new_clears_lifeform_pick",
     "space_resumes",
     "toast_shown",
     "esc_to_menu",

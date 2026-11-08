@@ -47,7 +47,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     start.add_argument(
         "--lifeform",
         metavar="ID",
-        help="skip the menu and start this life form fresh",
+        help="skip the menu and start this life form fresh (asks first over a save)",
     )
     start.add_argument(
         "--continue",

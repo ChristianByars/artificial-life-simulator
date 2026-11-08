@@ -22,6 +22,7 @@ from ursina import Entity, Ursina, application, color, held_keys, window
 
 from alife import keys
 from alife.lifeforms import Lifeform, registry
+from alife.menu_model import card_model, cli_start_needs_confirm
 from alife.save import SaveError, restore, store_for_run
 from alife.screens.menu import TITLE, MenuScreen
 from alife.screens.simulation import SimulationScreen
@@ -44,6 +45,7 @@ class App:
         # <user data dir>/saves, or ALIFE_DATA_DIR. --smoke / --screenshot without ALIFE_DATA_DIR
         # get a throwaway temp folder, so they never overwrite the user's saves (R21).
         test_run = args.smoke is not None or args.screenshot is not None
+        self.test_run = test_run
         self.store = store_for_run(test_run)
         if test_run:
             print(f"alife: test run, saves go to {self.store.root}", file=sys.stderr, flush=True)
@@ -79,17 +81,32 @@ class App:
 
     # screens
 
-    def show_menu(self) -> None:
+    def show_menu(self) -> MenuScreen:
         self._close_screen()
-        self.screen = MenuScreen(self)
+        menu = self.screen = MenuScreen(self)
+        return menu
 
-    def start(self, lifeform_id: str, seed: int | None = None) -> None:
-        """Start ``lifeform_id`` fresh. Without ``seed``: ``--seed`` if given, else a new one."""
-        if seed is None:
-            seed = self.args.seed if self.args.seed is not None else new_seed()
+    def start(self, lifeform_id: str, seed: int) -> None:
+        """Start ``lifeform_id`` fresh with ``seed``. Callers choose it (#31): ``--seed`` (or a new
+        seed) for the start the command line makes, a new seed for the menu's New."""
         session = Session(self.lifeforms[lifeform_id], seed)  # before closing: may raise
         self._close_screen()
         self.screen = SimulationScreen(self, session)
+
+    def start_from_cli(self, lifeform_id: str) -> None:
+        """``--lifeform ID``: start fresh with ``--seed``, or a new seed.
+
+        Over a save that the card's New would ask about (``menu_model``: one that restores, or one
+        from a newer version), show the menu with that card's ``CONFIRM_NEW`` dialog up instead
+        (R25): Yes starts fresh, Cancel stays on the menu with Continue. With no save or a damaged
+        one, and in a test run (``--smoke``, ``--screenshot``), it starts at once.
+        """
+        seed = self.args.seed
+        card = card_model(lifeform_id, self.lifeforms[lifeform_id], self.store)
+        if cli_start_needs_confirm(card, test_run=self.test_run):
+            self.show_menu().ask_new(lifeform_id, seed)
+            return
+        self.start(lifeform_id, seed if seed is not None else new_seed())
 
     def resume(self, lifeform_id: str) -> bool:
         """Continue ``lifeform_id`` from its save: state, tick, speed and camera (SPEC §4).
@@ -119,7 +136,7 @@ class App:
 
     def run(self) -> int:
         if self.args.lifeform is not None:
-            self.start(self.args.lifeform)
+            self.start_from_cli(self.args.lifeform)  # may show the menu, asking first (R25)
         elif self.args.continue_id is not None:
             self.resume(self.args.continue_id)  # falls back to the menu
         else:

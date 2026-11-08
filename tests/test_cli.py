@@ -10,6 +10,7 @@ import subprocess
 import sys
 import textwrap
 import types
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -91,6 +92,61 @@ def test_unknown_lifeform_exits_2(flag, capsys, no_window):
     text = captured.out + captured.err
     assert "nope" in text
     assert "demo" in text  # the known ids are listed
+
+
+# --- --lifeform over a save (R25) and --seed (#31): App.start_from_cli on stubs (headless) ------
+
+
+def cli_start(tmp_path: Path, save: str | None, seed: int | None, test_run: bool = False) -> list:
+    """Run ``App.start_from_cli("demo")`` on a stub app; returns what it did, in order."""
+    from alife.app import App
+    from alife.lifeforms.demo import DemoLifeform
+    from alife.orbit import DEFAULT_POSE
+    from alife.save import SaveStore, build_save
+    from alife.session import Session
+
+    store = SaveStore(tmp_path / "saves")
+    if save is not None:
+        data = build_save(Session(DemoLifeform, 3), DEFAULT_POSE, datetime.now().astimezone())
+        if save == "newer":
+            data["schema_version"] = 2
+        store.write("demo", data)
+        if save == "damaged":
+            store.path("demo").write_text('{"schema_version": 1, "trunc')
+    calls: list = []
+    menu = types.SimpleNamespace(ask_new=lambda lid, s: calls.append(("ask_new", lid, s)))
+    fake = types.SimpleNamespace(
+        args=types.SimpleNamespace(seed=seed),
+        lifeforms={"demo": DemoLifeform},
+        store=store,
+        test_run=test_run,
+        show_menu=lambda: calls.append(("menu",)) or menu,
+        start=lambda lid, s: calls.append(("start", lid, s)),
+    )
+    App.start_from_cli(fake, "demo")
+    return calls
+
+
+@pytest.mark.parametrize("seed", [7, None])
+@pytest.mark.parametrize("save", ["good", "newer"])
+def test_lifeform_flag_over_a_save_asks_first(tmp_path, save, seed):  # R25, M5
+    assert cli_start(tmp_path, save, seed) == [("menu",), ("ask_new", "demo", seed)]
+
+
+@pytest.mark.parametrize("save", [None, "damaged"])
+def test_lifeform_flag_starts_at_once_with_nothing_to_lose(tmp_path, save):
+    assert cli_start(tmp_path, save, seed=7) == [("start", "demo", 7)]
+
+
+def test_lifeform_flag_without_seed_draws_one(tmp_path):
+    [(what, lifeform_id, seed)] = cli_start(tmp_path, None, seed=None)
+    assert (what, lifeform_id) == ("start", "demo")
+    assert isinstance(seed, int) and 0 <= seed < 2**31
+
+
+@pytest.mark.parametrize("save", ["good", "newer"])
+def test_test_runs_start_at_once_over_a_save(tmp_path, save):  # --smoke / --screenshot
+    assert cli_start(tmp_path, save, seed=7, test_run=True) == [("start", "demo", 7)]
 
 
 # --- shader ports (headless: imports Ursina, opens nothing) ---------------------------------
@@ -317,8 +373,8 @@ INTEGRATION = textwrap.dedent(
     seen = {}
 
 
-    def check(name, ok):
-        print("CHECK", name, "ok" if ok else "FAIL", flush=True)
+    def check(name, ok, detail=""):
+        print("CHECK", name, "ok" if ok else "FAIL", detail, flush=True)
 
 
     def no_stock_shaders(tag):
@@ -333,6 +389,7 @@ INTEGRATION = textwrap.dedent(
         if n == 20:
             s = app.screen
             check("starts_in_sim", isinstance(s, SimulationScreen))
+            check("cli_start_uses_seed", s.session.seed == 1)  # --seed is for this start only
             check("sim_ticks", s.session.tick > 0)
             walkers = list(s.session.lifeform.view.entities.values())
             check("walkers_built", len(walkers) == 30)
@@ -417,7 +474,8 @@ INTEGRATION = textwrap.dedent(
         elif n == 31:
             s = app.screen
             check("start_button_starts_sim", isinstance(s, SimulationScreen))
-            check("cli_seed_reused", s.session.seed == 1)
+            # The menu's New gets a new seed, never --seed (#31). (1 in 2**31 that it draws 1.)
+            check("menu_new_gets_new_seed", s.session.seed != 1, s.session.seed)
             app.quit()
             return task.done
         return task.cont
@@ -431,6 +489,7 @@ INTEGRATION = textwrap.dedent(
 
 INTEGRATION_CHECKS = {
     "starts_in_sim",
+    "cli_start_uses_seed",
     "sim_ticks",
     "walkers_built",
     "walkers_use_fog_port",
@@ -450,7 +509,7 @@ INTEGRATION_CHECKS = {
     "menu_text_uses_text_port",
     "menu_no_stock_shaders",
     "start_button_starts_sim",
-    "cli_seed_reused",
+    "menu_new_gets_new_seed",
 }
 
 

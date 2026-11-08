@@ -83,8 +83,20 @@ class Lifeform(Protocol):
     # view (Ursina)
     def build_view(self, root: Entity) -> None: ...
     def sync_view(self) -> None: ...  # called once per frame
-    def on_pick(self, entity_id: int | None) -> None: ...  # clicked a 3D object
-    def on_dish_click(self, world_pos: Vec2, mods: set) -> None: ...
+    def on_pick(self, entity_id: int | None) -> None:
+        """A click picked the entity whose view has ``pick_id == entity_id``; None clears it.
+
+        Selection is UI state (I3): it is never saved, so keep it out of ``get_state``. The
+        simulation screen owns it and clears it: it calls ``on_pick(None)`` after every view
+        build (start, Continue, Reset, New) and when the picked entity goes away (destroyed or
+        disabled), so the life form and the HUD agree.
+        """
+        ...
+
+    def on_dish_click(self, world_pos: Vec2, mods: set) -> None:
+        """Shift+click on the dish at ``world_pos`` (sim coordinates), even with an entity in
+        front of it (I1); never called for a click off the dish."""
+        ...
 
 
 def registry() -> dict[str, type[Lifeform]]:

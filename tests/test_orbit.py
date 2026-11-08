@@ -51,8 +51,13 @@ def test_yaw_not_clamped():
 
 def test_zoom_clamped():
     s = default_state()
-    assert zoom(s, 1e6).distance == DIST_MAX == 60
+    assert zoom(s, 1e6).distance == DIST_MAX == 90
     assert zoom(s, 1e-6).distance == DIST_MIN == 2
+
+
+def test_far_pose_survives_a_save():  # #37: Continue keeps a camera zoomed out past 60
+    far = OrbitState(target=(0.0, 0.0, 0.0), yaw=0.0, pitch=45.0, distance=85.0)
+    assert from_pose(to_pose(far)).distance == pytest.approx(85.0)
 
 
 def test_zoom_scales_distance():

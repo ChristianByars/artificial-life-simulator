@@ -60,6 +60,11 @@ MSG_RESTORE_FAILED = "Save can't be loaded."
 
 Pose = dict[str, list[float]]
 
+# A saved tick must be below this (M3). Up to 2**53 every tick is exact as a float, so
+# ``Session.sim_time`` stays finite and exact; a hand-edited 10**400 would overflow it and crash the
+# HUD. 2**53 ticks at 60 per second is about 4.8 million years.
+MAX_TICK = 2**53
+
 
 class SaveError(Exception):
     """A save could not be written (the previous file is left intact) or restored."""
@@ -220,8 +225,8 @@ def _restore(data: Any, registry: Mapping[str, type[Lifeform]]) -> tuple[Session
     if not isinstance(lifeform_id, str) or lifeform_id not in registry:
         raise SaveError(f"unknown life form {lifeform_id!r}")
     tick = data["tick"]
-    if not _is_int(tick) or tick < 0:
-        raise SaveError(f"tick must be a non-negative integer, got {tick!r}")
+    if not _is_int(tick) or not 0 <= tick < MAX_TICK:
+        raise SaveError(f"tick must be an integer in [0, 2**53), got {_short(tick)}")
     if not _is_int(data["seed"]):
         raise SaveError(f"seed must be an integer, got {data['seed']!r}")
     speed = data["speed"]
@@ -246,6 +251,12 @@ def _camera_pose(camera: Any) -> Pose:
         raise SaveError(f"camera pose is not finite: {camera!r}")
     orbit.from_pose(pose)  # the camera accepts it (raises ValueError otherwise)
     return pose
+
+
+def _short(value: object, limit: int = 40) -> str:
+    """``repr(value)`` cut to ``limit`` characters: a hand-edited tick can have 400 digits."""
+    text = repr(value)
+    return text if len(text) <= limit else f"{text[:limit]}..."
 
 
 def _is_numbers(value: object, lengths: tuple[int, ...]) -> bool:

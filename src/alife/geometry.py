@@ -60,3 +60,33 @@ def to_world(p: Vec2, y: float = 0.0) -> tuple[float, float, float]:
 
 def from_world(x: float, y: float, z: float) -> Vec2:
     return Vec2(x, z)
+
+
+def ray_ground_point(
+    origin: tuple[float, float, float], direction: tuple[float, float, float]
+) -> Vec2 | None:
+    """Where a world-space ray meets the dish plane y = 0, as a sim point (decision M3).
+
+    None when it never does: the ray is parallel to the plane, points away from it, or is not
+    finite. ``direction`` need not be a unit vector.
+    """
+    ox, oy, oz = origin
+    dx, dy, dz = direction
+    if not all(math.isfinite(v) for v in (ox, oy, oz, dx, dy, dz)) or dy == 0:
+        return None
+    if oy != 0 and (oy > 0) == (dy > 0):  # starts above and points up, or below and points down
+        return None
+    x, z = ox - oy * (dx / dy), oz - oy * (dz / dy)
+    if not (math.isfinite(x) and math.isfinite(z)):
+        return None
+    return Vec2(x, z)
+
+
+def dish_point(
+    origin: tuple[float, float, float],
+    direction: tuple[float, float, float],
+    radius: float = DISH_RADIUS,
+) -> Vec2 | None:
+    """:func:`ray_ground_point`, but only inside the dish rim (on the rim counts)."""
+    p = ray_ground_point(origin, direction)
+    return p if p is not None and p.length() <= radius else None

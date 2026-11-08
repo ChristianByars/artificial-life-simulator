@@ -56,7 +56,7 @@ STEP_KEYS = (".",)  # the keypad's decimal key also arrives as '.'
 SPEED_UP_KEYS = ("+", "=")  # '=' is the US '+' key without (and, on macOS, with) Shift; '+' keypad
 SPEED_DOWN_KEYS = ("-",)  # main keyboard and keypad
 INFO_KEYS = ("i",)
-SAVE_KEYS = ("s",)  # with Command or Control only (U1); plain S pans
+SAVE_SHORTCUT_KEYS = ("s",)  # with Command or Control only (U1); plain S pans
 RESET_KEYS = ("r",)
 NEW_KEYS = ("n",)
 MENU_KEYS = ("escape",)
@@ -68,7 +68,7 @@ BINDINGS: dict[Action, tuple[str, ...]] = {
     "speed_up": SPEED_UP_KEYS,
     "speed_down": SPEED_DOWN_KEYS,
     "info": INFO_KEYS,
-    "save": SAVE_KEYS,
+    "save": SAVE_SHORTCUT_KEYS,
     "reset": RESET_KEYS,
     "new": NEW_KEYS,
     "menu": MENU_KEYS,
@@ -98,7 +98,7 @@ def held_mods(held: Mapping[str, float]) -> frozenset[str]:
 def action_for(key: str, mods: Set[str]) -> Action | None:
     """The action for one input event ``key`` with ``mods`` held, or None."""
     chord = not CHORD_MODIFIERS.isdisjoint(mods)
-    if key in SAVE_KEYS:
+    if key in SAVE_SHORTCUT_KEYS:
         return "save" if chord else None
     if chord:
         return None

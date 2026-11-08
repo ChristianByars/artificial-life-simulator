@@ -91,3 +91,20 @@ def test_stats_and_pick():
     assert sim.selected == 3
     sim.on_pick(None)
     assert sim.selected is None
+
+
+def test_selection_is_not_saved():  # I3: selection is UI state
+    sim = WalkerSim(Random(1), 5)
+    sim.on_pick(2)
+    state = sim.get_state()
+    assert "selected" not in state
+    assert set(state) == {"next_id", "walkers"}
+
+
+def test_set_state_ignores_a_saved_selection():  # I3: saves written before the fix carry it
+    sim = WalkerSim(Random(1), 5)
+    old = {**sim.get_state(), "selected": 3}
+    fresh = WalkerSim(Random(2), 1)
+    fresh.set_state(old)
+    assert fresh.selected is None
+    assert fresh.get_state() == sim.get_state()

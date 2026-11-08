@@ -1,8 +1,11 @@
 """Simulation screen: runs one life form and owns its 3D scene, HUD and controls (SPEC 3.1, 5).
 
 GUI-only. Keys map to actions in ``alife.keys``; the HUD text comes from ``alife.ui_text``.
-Cmd/Ctrl+S saves with a toast; Esc autosaves, then shows the menu (the app autosaves on quit).
-M5 adds the info panel (I).
+Cmd/Ctrl+S saves with a toast; Esc autosaves, then shows the menu (the app autosaves on quit). If
+that autosave fails, Esc stays here and shows the same toast as a failed Cmd+S (M4).
+A click picks; Shift+click always acts on the dish (I1). Selection is UI state (I3): this screen
+owns it, never saves it, and clears it in the life form whenever the view is built or the picked
+entity goes away. M5 adds the info panel (I).
 """
 
 from __future__ import annotations
@@ -14,11 +17,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ursina import Entity, camera, destroy, held_keys, mouse, time
+from panda3d.core import Point2, Point3
+from ursina import Entity, camera, destroy, held_keys, mouse, scene, time, window
 
 from alife import keys
 from alife.camera import OrbitCamera
-from alife.geometry import from_world
+from alife.geometry import Vec2, dish_point
 from alife.save import Pose, SaveError, build_save
 from alife.session import Session, new_seed
 from alife.ui import destroy_tree
@@ -49,12 +53,12 @@ class SimulationScreen(Entity):
         self.root = Entity(name="simulation_root")
         self.orbit_camera = OrbitCamera(camera_pose)  # WASD through keys.pan_vector (camera.py)
         self.orbit_camera.parent = self.root
+        self.picked: Entity | None = None  # the entity last picked by a click (C1: pick_id)
         self.view_root = self._build_view()
         self.ui_root = Entity(parent=camera.ui, name="simulation_ui")
         self.hud = Hud(parent=self.ui_root)
         self.toast = Toast(parent=self.ui_root)
         self.dialog: ConfirmDialog | None = None
-        self.picked: Entity | None = None  # the entity last picked by a click (C1: pick_id)
         self.fps = FpsMeter()
         # The first frame's time includes building the screen (and, at launch, opening the
         # window); counting it would show "FPS 1" for the first half second.
@@ -126,10 +130,11 @@ class SimulationScreen(Entity):
         if hit is not None and hit.has_ancestor(camera.ui):
             return  # a UI control: its own on_click handles the click
         lifeform = self.session.lifeform
-        if keys.SHIFT in mods and getattr(hit, "is_dish", False):
-            point = mouse.world_point
-            if point is not None:
-                lifeform.on_dish_click(from_world(*point), set(mods))
+        if keys.SHIFT in mods:
+            # The dish under the mouse even with a cell in front of it (I1); never a pick.
+            point = self._mouse_dish_point()
+            if point is not None:  # off the dish: nothing
+                lifeform.on_dish_click(point, set(mods))
             return
         pick_id = getattr(hit, "pick_id", None)
         if pick_id is None:  # the dish, an unpickable entity, or empty space
@@ -139,10 +144,31 @@ class SimulationScreen(Entity):
             self.picked = hit
             lifeform.on_pick(pick_id)
 
+    def _mouse_dish_point(self) -> Vec2 | None:
+        """Where the mouse ray meets the dish plane y = 0, inside the rim; None off the dish.
+
+        The same ray Ursina's mouse casts (``ursina/mouse.py``): film coordinates from
+        ``mouse.x`` / ``mouse.y``, through the camera's lens, in the camera entity's space.
+        """
+        near, far = Point3(), Point3()
+        film = Point2(mouse.x * 2 / window.aspect_ratio, mouse.y * 2)
+        if not camera.lens.extrude(film, near, far):
+            return None
+        a, b = scene.get_relative_point(camera, near), scene.get_relative_point(camera, far)
+        return dish_point((a.x, a.y, a.z), (b.x - a.x, b.y - a.y, b.z - a.z))
+
     def _picked_entity(self) -> Entity | None:
-        """The remembered pick, if it still exists: not destroyed and not disabled."""
+        """The remembered pick, if it still exists: not destroyed and not disabled.
+
+        A pick that went away (a walker removed, a cell that died) is dropped here, in the life
+        form too, so the HUD and the life form never disagree (I3).
+        """
         e = self.picked
-        if e is None or e.is_empty() or not e.enabled:
+        if e is None:
+            return None
+        if e.is_empty() or not e.enabled:
+            self.picked = None
+            self.session.lifeform.on_pick(None)
             return None
         return e
 
@@ -168,27 +194,29 @@ class SimulationScreen(Entity):
 
     def autosave(self) -> bool:
         """Save without a toast; on failure print one line to stderr. Never raises: a failed
-        autosave must not stop the menu or quitting."""
+        autosave must not stop quitting."""
+        return self._try_save("autosave") is None
+
+    def _try_save(self, what: str) -> Exception | None:
+        """Save; on failure print one ``alife: <what> failed`` line and return the error."""
         try:
             self.save()
         except Exception as exc:  # SaveError, or a life form's get_state failing
-            print(f"alife: autosave failed: {_one_line(exc)}", file=sys.stderr, flush=True)
-            return False
-        return True
+            print(f"alife: {what} failed: {_one_line(exc)}", file=sys.stderr, flush=True)
+            return exc
+        return None
 
     def _save_with_toast(self) -> None:
-        try:
-            self.save()
-        except Exception as exc:  # SaveError, or a life form's get_state failing
-            print(f"alife: save failed: {_one_line(exc)}", file=sys.stderr, flush=True)
-            reason = exc.reason if isinstance(exc, SaveError) else type(exc).__name__
-            self.toast.show(SAVE_FAILED.format(reason=reason))
-            return
-        self.toast.show(SAVED)
+        exc = self._try_save("save")
+        self.toast.show(SAVED if exc is None else _save_failed_text(exc))
 
     def _to_menu(self) -> None:
         # Save while the session and camera still exist; show_menu() closes this screen.
-        self.autosave()
+        exc = self._try_save("autosave")
+        if exc is not None:
+            # Stay (M4): the menu's Continue would offer the older save as if this one were kept.
+            self.toast.show(_save_failed_text(exc))
+            return
         self.app.show_menu()
 
     # confirm dialog, reset and new
@@ -216,14 +244,21 @@ class SimulationScreen(Entity):
         self._rebuild_view()
 
     def _build_view(self) -> Entity:
+        """Build the life form's view with nothing selected, and draw its first frame.
+
+        Every start, Continue, Reset and New comes through here, so each begins without a
+        selection: the life form is told ``on_pick(None)`` (I3).
+        """
+        self.picked = None
+        lifeform = self.session.lifeform
         view_root = Entity(parent=self.root, name="lifeform_view")
-        self.session.lifeform.build_view(view_root)
-        self.session.lifeform.sync_view()  # draw the starting state on the first frame
+        lifeform.build_view(view_root)
+        lifeform.on_pick(None)
+        lifeform.sync_view()  # draw the starting state on the first frame
         return view_root
 
     def _rebuild_view(self) -> None:
         """The session holds a fresh life form: replace the old one's view with a new one."""
-        self.picked = None
         destroy_tree(self.view_root)
         self.view_root = self._build_view()
         self._refresh_hud()
@@ -233,6 +268,12 @@ class SimulationScreen(Entity):
         destroy_tree(self.root)
         destroy_tree(self.ui_root)
         destroy(self)
+
+
+def _save_failed_text(exc: Exception) -> str:
+    """The toast for a failed save (Cmd+S or Esc): a few words of why."""
+    reason = exc.reason if isinstance(exc, SaveError) else type(exc).__name__
+    return SAVE_FAILED.format(reason=reason)
 
 
 def _one_line(exc: BaseException) -> str:

@@ -115,6 +115,20 @@ def test_roundtrip_restores_everything(data_dir: Path) -> None:
     assert restored.rng.random() == original.rng.random()  # the next draw matches
 
 
+def test_selection_is_not_saved() -> None:  # I3: selection is UI state, never saved
+    session = Session(DemoLifeform, 7)
+    session.lifeform.on_pick(3)
+    assert "selected" not in build_save(session, CUSTOM_POSE, NOW)["state"]
+
+
+def test_restore_ignores_a_saved_selection() -> None:  # I3: saves from before the fix
+    data = demo_save()
+    data["state"]["selected"] = 3
+    restored, _ = restore(data, registry())
+    assert restored.lifeform.sim.selected is None
+    assert "selected" not in restored.lifeform.get_state()
+
+
 def test_restore_continues_on_the_lifeforms_rng() -> None:
     restored, _ = restore(demo_save(), registry())
     assert restored.lifeform.sim.rng is restored.rng
@@ -140,6 +154,8 @@ BAD_SAVES = {
     "tick_float": lambda: demo_save(tick=30.5),
     "tick_bool": lambda: demo_save(tick=True),
     "tick_str": lambda: demo_save(tick="30"),
+    "tick_2_53": lambda: demo_save(tick=2**53),  # M3: the first tick past the bound
+    "tick_10_400": lambda: demo_save(tick=10**400),  # M3: sim_time would overflow a float
     "seed_str": lambda: demo_save(seed="7"),
     "seed_float": lambda: demo_save(seed=7.0),
     "speed_str": lambda: demo_save(speed="fast"),
@@ -179,6 +195,12 @@ def test_restore_reports_why() -> None:
         restore(demo_save(lifeform_id="nope"), registry())
     with pytest.raises(SaveError, match="KeyError"):
         restore(demo_save(state={}), registry())
+
+
+def test_restore_accepts_the_largest_tick() -> None:  # M3: the bound is 2**53, exclusive
+    restored, _ = restore(demo_save(tick=2**53 - 1), registry())
+    assert restored.tick == 2**53 - 1
+    assert restored.sim_time == (2**53 - 1) * TICK_DT  # finite: the HUD can show it
 
 
 def test_restore_accepts_a_two_value_rotation() -> None:
@@ -516,6 +538,8 @@ SCENARIO = textwrap.dedent(
     from alife.__main__ import parse_args
     from alife.app import App
     from alife.lifeforms import registry
+    from alife.lifeforms.demo import DemoLifeform
+    from alife.lifeforms.demo.view import SELECTED_COLOR
     from alife.save import MSG_RESTORE_FAILED, SaveStore, restore
     from alife.screens.menu import BUTTON_WIDTH, SUMMARY_SCALE, MenuScreen
     from alife.screens.simulation import SimulationScreen
@@ -525,6 +549,16 @@ SCENARIO = textwrap.dedent(
     app = App(parse_args(["--lifeform", "demo", "--seed", "5"]))
     A = K.ascii_key
     POSE = om.to_pose(om.OrbitState(target=(2.0, 0.0, -1.0), yaw=-40.0, pitch=50.0, distance=25))
+    pick_calls = []  # every on_pick call, as (life form, id) (I3)
+    _on_pick = DemoLifeform.on_pick
+
+
+    def spy_on_pick(self, entity_id):
+        pick_calls.append((self, entity_id))
+        _on_pick(self, entity_id)
+
+
+    DemoLifeform.on_pick = spy_on_pick
 
 
     def check(name, ok, detail=""):
@@ -588,6 +622,10 @@ SCENARIO = textwrap.dedent(
         return [e.text for e in entity.get_descendants() if isinstance(e, Text) and e.enabled]
 
 
+    def orange(e):
+        return all(abs(a - b) < 1e-3 for a, b in zip(e.color, SELECTED_COLOR))
+
+
     def scenario():
         yield 20
         s = app.screen
@@ -605,6 +643,14 @@ SCENARIO = textwrap.dedent(
         first_tick = r.data["tick"] if r.status == "ok" else -1
         yield 10
 
+        # A pick, as a click makes it: drawn orange, but it is UI state and not saved (I3).
+        views = s.session.lifeform.view.entities
+        wid = sorted(views)[3]
+        s.picked = views[wid]
+        s.session.lifeform.on_pick(wid)
+        yield 2
+        check("pick_drawn_orange", orange(views[wid]))
+
         # Esc autosaves, then shows the menu with Continue.
         live = s.session
         press(K.escape())
@@ -613,6 +659,9 @@ SCENARIO = textwrap.dedent(
         check("esc_autosaves", r.status == "ok" and r.data["tick"] > first_tick)
         saved = r.data
         check("esc_saved_live_state", saved["state"] == live.lifeform.get_state())
+        check("esc_save_has_no_pick", "selected" not in saved["state"], sorted(saved["state"]))
+        # Saves written before I3 kept the pick in the state; Continue must ignore it.
+        store.write("demo", dict(saved, state=dict(saved["state"], selected=wid)))
         m = app.screen
         check("esc_shows_menu", isinstance(m, MenuScreen))
         card = m.cards["demo"]
@@ -667,6 +716,13 @@ SCENARIO = textwrap.dedent(
         check("continue_pose", pose_close(s.orbit_camera.get_pose(), POSE))
         check("continue_view_built", len(s.session.lifeform.view.entities) == 30)
         yield 5
+        lf = s.session.lifeform
+        check("continue_clears_pick", (lf, None) in pick_calls)
+        hud_lines = [t.text for t in s.hud.texts]
+        nothing = lf.sim.selected is None and s.picked is None
+        nothing = nothing and not any(orange(e) for e in lf.view.entities.values())
+        nothing = nothing and not any(t.startswith("Selected") for t in hud_lines)
+        check("continue_nothing_selected", nothing, (lf.sim.selected, hud_lines))
 
         # A stale save: valid JSON and schema, but set_state rejects its state.
         press(K.escape())
@@ -739,8 +795,10 @@ SCENARIO_CHECKS = {
     "cmd_s_toast",
     "save_has_speed",
     "save_has_pose",
+    "pick_drawn_orange",
     "esc_autosaves",
     "esc_saved_live_state",
+    "esc_save_has_no_pick",
     "esc_shows_menu",
     "card_has_continue",
     "card_no_error",
@@ -761,6 +819,8 @@ SCENARIO_CHECKS = {
     "continue_state",
     "continue_pose",
     "continue_view_built",
+    "continue_clears_pick",
+    "continue_nothing_selected",
     "stale_no_continue",
     "stale_error_shown",
     "stale_new_button",
@@ -792,3 +852,213 @@ def test_save_and_continue_in_app(tmp_path: Path, data_dir: Path) -> None:
         found = {c for _n, c in rgb.getcolors(maxcolors=rgb.width * rgb.height)}
     target = menu.ERROR_RGB
     assert any(all(abs(a - b) <= 3 for a, b in zip(c, target, strict=True)) for c in found)
+
+
+# R25: --lifeform ID over a good save opens the menu with that card's CONFIRM_NEW dialog up.
+# argv[1] is the answer: "cancel" (Esc) stays on the menu; "yes" (Enter) starts fresh with --seed.
+LIFEFORM_OVER_SAVE = textwrap.dedent(
+    """
+    import sys
+
+    from panda3d.core import KeyboardButton as K
+
+    from alife.__main__ import parse_args
+    from alife.app import App
+    from alife.screens.menu import MenuScreen
+    from alife.screens.simulation import SimulationScreen
+    from alife.ui_text import CONFIRM_NEW
+
+    answer = sys.argv[1]
+    app = App(parse_args(["--lifeform", "demo", "--seed", "9"]))
+
+
+    def check(name, ok, detail=""):
+        print("CHECK", name, "ok" if ok else "FAIL", detail, flush=True)
+
+
+    def press(button):
+        dev = app.ursina.win.get_input_device(0)
+        dev.button_down(button)
+        dev.button_up(button)
+
+
+    def scenario():
+        yield 10
+        m = app.screen
+        on_menu = isinstance(m, MenuScreen)
+        check("opens_menu", on_menu, type(m).__name__)
+        dialog = m.dialog if on_menu else None
+        check("dialog_up", dialog is not None and dialog.message == CONFIRM_NEW)
+        check("card_offers_continue", on_menu and m.cards["demo"].continue_button is not None)
+        press(K.escape() if answer == "cancel" else K.enter())
+        yield 3
+        s = app.screen
+        if answer == "cancel":
+            check("cancel_stays_on_menu", s is m and on_menu and m.dialog is None)
+        else:
+            # Fresh: the old save is at tick 300; a few frames run at most 16 ticks each.
+            in_sim = isinstance(s, SimulationScreen)
+            tick = s.session.tick if in_sim else None
+            check("yes_starts_fresh", in_sim and tick < 100, tick)
+            check("yes_uses_cli_seed", in_sim and s.session.seed == 9)
+        app.quit()
+
+
+    steps = scenario()
+    wait = [0]
+
+
+    def drive(task):
+        if wait[0] > 0:
+            wait[0] -= 1
+            return task.cont
+        try:
+            wait[0] = next(steps)
+        except StopIteration:
+            return task.done
+        return task.cont
+
+
+    app.ursina.taskMgr.add(drive, "lifeform-over-save")
+    sys.exit(app.run())
+    """
+)
+
+LIFEFORM_OVER_SAVE_CHECKS = {
+    "cancel": {"opens_menu", "dialog_up", "card_offers_continue", "cancel_stays_on_menu"},
+    "yes": {
+        "opens_menu",
+        "dialog_up",
+        "card_offers_continue",
+        "yes_starts_fresh",
+        "yes_uses_cli_seed",
+    },
+}
+
+
+@pytest.mark.gui
+@pytest.mark.parametrize("answer", ["cancel", "yes"])
+def test_lifeform_flag_over_a_save_in_app(answer: str, data_dir: Path) -> None:  # R25 (I2)
+    saved = write_demo_save(data_dir)
+    path = data_dir / "saves" / "demo.json"
+    before = path.read_bytes()
+    proc = run_script(LIFEFORM_OVER_SAVE, answer)
+    assert_checks(proc, LIFEFORM_OVER_SAVE_CHECKS[answer])
+    if answer == "cancel":
+        assert path.read_bytes() == before  # Cancel, then quit from the menu: the save is kept
+    else:
+        data = read_ok(data_dir)  # Yes started fresh; quitting autosaved it over the old save
+        assert data["seed"] == 9 != saved["seed"]
+
+
+# M4: a failed autosave on Esc stays in the sim and shows the toast a failed Cmd+S shows. The
+# store is pointed under a file (argv[1]), so it cannot make its folder; then it is fixed.
+ESC_SAVE_FAILS = textwrap.dedent(
+    """
+    import sys
+    from pathlib import Path
+
+    from panda3d.core import KeyboardButton as K
+
+    from alife.__main__ import parse_args
+    from alife.app import App
+    from alife.save import SaveStore
+    from alife.screens.menu import MenuScreen
+    from alife.ui_text import SAVE_FAILED
+
+    blocker = Path(sys.argv[1])
+    app = App(parse_args(["--lifeform", "demo", "--seed", "4"]))
+    A = K.ascii_key
+
+
+    def check(name, ok, detail=""):
+        print("CHECK", name, "ok" if ok else "FAIL", detail, flush=True)
+
+
+    def dev():
+        return app.ursina.win.get_input_device(0)
+
+
+    def press(button, raw=False):
+        if raw:
+            dev().raw_button_down(button)
+        dev().button_down(button)
+        if raw:
+            dev().raw_button_up(button)
+        dev().button_up(button)
+
+
+    def cmd_s():
+        dev().button_down(K.meta())
+        dev().button_down(K.lmeta())
+        press(A("s"), raw=True)
+        dev().button_up(K.lmeta())
+        dev().button_up(K.meta())
+
+
+    def scenario():
+        yield 20
+        s = app.screen
+        good = app.store
+        app.store = SaveStore(blocker / "saves")
+        press(K.escape())
+        yield 3
+        check("esc_stays_in_sim", app.screen is s, type(app.screen).__name__)
+        toast = s.toast.message if s.toast.enabled else None
+        prefix = SAVE_FAILED.format(reason="")
+        shown = toast is not None and toast.startswith(prefix) and len(toast) > len(prefix)
+        check("esc_failure_toast", shown, toast)
+        tick = s.session.tick
+        yield 5
+        check("sim_keeps_running", s.session.tick > tick)
+        cmd_s()
+        yield 3
+        check("cmd_s_same_toast", s.toast.enabled and s.toast.message == toast, s.toast.message)
+        app.store = good
+        press(K.escape())
+        yield 3
+        check("esc_then_menu", isinstance(app.screen, MenuScreen))
+        check("esc_then_saved", good.read("demo").status == "ok")
+        app.quit()
+
+
+    steps = scenario()
+    wait = [0]
+
+
+    def drive(task):
+        if wait[0] > 0:
+            wait[0] -= 1
+            return task.cont
+        try:
+            wait[0] = next(steps)
+        except StopIteration:
+            return task.done
+        return task.cont
+
+
+    app.ursina.taskMgr.add(drive, "esc-save-fails")
+    sys.exit(app.run())
+    """
+)
+
+ESC_SAVE_FAILS_CHECKS = {
+    "esc_stays_in_sim",
+    "esc_failure_toast",
+    "sim_keeps_running",
+    "cmd_s_same_toast",
+    "esc_then_menu",
+    "esc_then_saved",
+}
+
+
+@pytest.mark.gui
+def test_failed_esc_autosave_stays_in_sim(tmp_path: Path, data_dir: Path) -> None:  # M4
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file, so no saves folder can be made under it")
+    proc = run_script(ESC_SAVE_FAILS, str(blocker))
+    assert_checks(proc, ESC_SAVE_FAILS_CHECKS)
+    lines = proc.stderr.splitlines()
+    assert len([ln for ln in lines if ln.startswith(AUTOSAVE_FAILED)]) == 1, proc.stderr  # Esc
+    assert len([ln for ln in lines if ln.startswith("alife: save failed")]) == 1  # Cmd+S
+    assert read_ok(data_dir)["seed"] == 4  # the Esc after the fix saved

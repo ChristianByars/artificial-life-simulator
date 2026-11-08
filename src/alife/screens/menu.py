@@ -4,8 +4,11 @@ Each card shows the life form's name and its one-line summary, then, from ``alif
 - no save: Start;
 - a save that reads and restores: Continue (restores it) and New, which asks first (R20): the next
   save would overwrite the old one;
-- a save that does not: its error, in amber, and New, which starts at once. The bad file stays
-  until the next save.
+- a save that does not: its error, in amber, and New. New asks first over a save from a newer
+  version (M5), which that version could still open, and starts at once over a damaged one. The
+  bad file stays until the next save.
+New always starts with a new seed; ``--seed`` is only for the start the command line makes (#31).
+``--lifeform ID`` over a protected save opens this menu with that card's dialog up (R25).
 While the confirm dialog is open the menu passes every key to it, and the cards take no clicks.
 """
 
@@ -19,6 +22,7 @@ from ursina import Button, Entity, Text, camera, color
 from ursina.models.procedural.quad import Quad
 
 from alife.menu_model import CardModel, card_models, new_needs_confirm
+from alife.session import new_seed
 from alife.ui import destroy_tree
 from alife.ui.confirm import ConfirmDialog
 from alife.ui_text import CONFIRM_NEW
@@ -143,19 +147,30 @@ class MenuScreen(Entity):
         if self.dialog is not None:
             return
         if not new_needs_confirm(model):
-            self.app.start(model.lifeform_id)
+            self.app.start(model.lifeform_id, new_seed())
+            return
+        self.ask_new(model.lifeform_id)
+
+    def ask_new(self, lifeform_id: str, seed: int | None = None) -> None:
+        """Open the ``CONFIRM_NEW`` dialog over ``lifeform_id``'s card (R20).
+
+        Yes starts it fresh with ``seed``, or a new seed when None (the card's New, #31). Cancel or
+        Esc closes the dialog and stays on the menu. ``App`` calls this for ``--lifeform ID`` over
+        a protected save, with ``--seed`` (R25).
+        """
+        if self.dialog is not None:
             return
         self.dialog = ConfirmDialog(
             CONFIRM_NEW,
-            on_confirm=partial(self._confirmed_new, model.lifeform_id),
+            on_confirm=partial(self._confirmed_new, lifeform_id, seed),
             on_cancel=self._dialog_closed,
             parent=self,
         )
         self._set_cards_clickable(False)
 
-    def _confirmed_new(self, lifeform_id: str) -> None:
+    def _confirmed_new(self, lifeform_id: str, seed: int | None) -> None:
         self._dialog_closed()
-        self.app.start(lifeform_id)
+        self.app.start(lifeform_id, new_seed() if seed is None else seed)
 
     def _dialog_closed(self) -> None:
         self.dialog = None

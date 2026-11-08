@@ -1,0 +1,16 @@
+# Artificial Life Simulator
+
+A desktop app that simulates life forms, starting with a cell colony, as a way to learn biology (cells, human and animal bodies).
+
+## Spec
+**`SPEC.md` is the source of truth for implementation.** Read it before writing code. Specs are discussed in claude.ai and written into SPEC.md; implementation happens in Claude Code. If code needs to deviate from the spec, flag it rather than silently diverging.
+
+Stack: Python 3.12+, uv, Ursina (on Panda3D) for 3D. Cells are plain Python objects; sim code never imports Ursina. Run with `uv run python -m alife`.
+Start with M0 (SPEC.md §8): test Tissue Forge, Ursina and Tellurium; write findings to `spikes/SPIKE.md`.
+Biology rule (SPEC §1.1): proven source models only; label our own assumptions; every life form ships a validation test.
+
+## Terms
+| Term | Meaning |
+|------|---------|
+| ALS | Artificial Life Simulator (this project) |
+| A-Life | Artificial life: simulating lifelike systems |
